@@ -1,5 +1,6 @@
 //  PGPArmor.swift
 //  SwiftPGP
+//
 
 import Foundation
 
@@ -50,16 +51,42 @@ public struct PGPArmor {
     
     /// Convert binary PGP message to ASCII armored format.
     public static func armored(_ data: Data, as type: PGPArmorType, part: Int = 1, of totalParts: Int = 1) -> String {
-        let base64String = data.base64EncodedString()
+        let headers = ["Version": "SwiftPGP", "Comment": "https://github.com/krzyzanowskim/ObjectivePGP", "Charset": "UTF-8"]
         
-        // Split into 64-character lines
+        var armoredMessage = ""
+        
+        // Header
+        let headerLine = armorHeader(for: type, part: part, of: totalParts)
+        armoredMessage += headerLine + "\n"
+        
+        // Armor Headers
+        for (key, value) in headers {
+            armoredMessage += "\(key): \(value)\n"
+        }
+        armoredMessage += "\n"
+        
+        // Body (Base64)
+        let base64String = data.base64EncodedString()
         let lines = base64String.chunked(into: 64)
         let body = lines.joined(separator: "\n")
+        armoredMessage += body + "\n"
         
-        let header = armorHeader(for: type, part: part, of: totalParts)
-        let footer = armorFooter(for: type, part: part, of: totalParts)
+        // Checksum (CRC24)
+        let crc24 = data.pgpCRC24
+        var crcBytes = [UInt8](repeating: 0, count: 3)
+        crcBytes[0] = UInt8((crc24 >> 16) & 0xFF)
+        crcBytes[1] = UInt8((crc24 >> 8) & 0xFF)
+        crcBytes[2] = UInt8(crc24 & 0xFF)
+        let checksumData = Data(crcBytes)
+        let checksumBase64 = checksumData.base64EncodedString()
         
-        return "\(header)\n\n\(body)\n\n\(footer)\n"
+        armoredMessage += "=" + checksumBase64 + "\n"
+        
+        // Footer
+        let footerLine = armorFooter(for: type, part: part, of: totalParts)
+        armoredMessage += footerLine + "\n"
+        
+        return armoredMessage
     }
     
     /// Convert ASCII armored PGP message to binary format.
@@ -68,19 +95,31 @@ public struct PGPArmor {
         
         var inBody = false
         var base64Lines: [String] = []
+        var checksumLine: String?
         
         for line in lines {
-            if line.hasPrefix(armorHeaderPrefix) {
+            let trimmedLine = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            
+            if trimmedLine.hasPrefix(armorHeaderPrefix) {
                 inBody = false
                 continue
             }
-            if line.hasPrefix(armorFooterPrefix) {
+            
+            if trimmedLine.hasPrefix(armorFooterPrefix) {
                 break
             }
-            if inBody {
-                base64Lines.append(line.trimmingCharacters(in: .whitespaces))
+            
+            // Check for checksum
+            if trimmedLine.hasPrefix("=") && checksumLine == nil {
+                checksumLine = String(trimmedLine.dropFirst())
+                continue
             }
-            if line.isEmpty && !inBody {
+            
+            if inBody && !trimmedLine.isEmpty && !trimmedLine.contains(":") { // Skip empty lines and headers
+                base64Lines.append(trimmedLine)
+            }
+            
+            if trimmedLine.isEmpty && !inBody {
                 inBody = true
             }
         }
@@ -88,6 +127,20 @@ public struct PGPArmor {
         let base64String = base64Lines.joined()
         guard let data = Data(base64Encoded: base64String) else {
             throw PGPError.invalidMessage
+        }
+        
+        // Verify Checksum if present
+        if let checksumBase64 = checksumLine {
+            guard let checksumData = Data(base64Encoded: checksumBase64), checksumData.count == 3 else {
+                throw PGPError.invalidMessage // Invalid checksum format
+            }
+            
+            let expectedCRC = (UInt32(checksumData[0]) << 16) | (UInt32(checksumData[1]) << 8) | UInt32(checksumData[2])
+            let actualCRC = data.pgpCRC24
+            
+            if expectedCRC != actualCRC {
+                throw PGPError.invalidMessage // Checksum mismatch
+            }
         }
         
         return data
@@ -130,4 +183,3 @@ extension String {
         return chunks
     }
 }
-

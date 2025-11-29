@@ -16,11 +16,12 @@ let package = Package(
     ],
     dependencies: [
         // Add dependencies here if needed
+        .package(path: "../OpenSSL")
     ],
     targets: [
         .target(
             name: "SwiftPGP",
-            dependencies: [],
+            dependencies: ["OpenSSL"],
             path: "Sources/SwiftPGP"
         ),
         .testTarget(

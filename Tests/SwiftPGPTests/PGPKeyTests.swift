@@ -90,21 +90,28 @@ final class PGPKeyTests: XCTestCase {
     }
     
     func testExportPublicKey() throws {
-        let keyData = Data([0x01, 0x02, 0x03, 0x04])
-        let partialKey = PGPPartialKey(type: .public, primaryKeyPacket: keyData)
+        let keyData = Data([0x01, 0x02, 0x03, 0x04]) // Dummy MPIs
+        let packet = PGPPublicKeyPacket()
+        packet.keyData = keyData
+        
+        let partialKey = PGPPartialKey(type: .public, primaryKeyPacket: packet)
         let key = PGPKey(publicKey: partialKey)
         
         let exported = try key.export(keyType: .public)
-        XCTAssertEqual(exported, keyData)
+        // Exported data will contain header + version + time + algo + keyData
+        XCTAssertTrue(exported.count > keyData.count)
     }
     
     func testExportSecretKey() throws {
         let keyData = Data([0x01, 0x02, 0x03, 0x04])
-        let partialKey = PGPPartialKey(type: .secret, primaryKeyPacket: keyData)
+        let packet = PGPPublicKeyPacket(tag: .secretKey)
+        packet.keyData = keyData
+        
+        let partialKey = PGPPartialKey(type: .secret, primaryKeyPacket: packet)
         let key = PGPKey(secretKey: partialKey)
         
         let exported = try key.export(keyType: .secret)
-        XCTAssertEqual(exported, keyData)
+        XCTAssertTrue(exported.count > keyData.count)
     }
     
     func testExportKeyNotFound() {

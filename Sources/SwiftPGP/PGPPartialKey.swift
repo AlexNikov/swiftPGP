@@ -1,44 +1,45 @@
+//
 //  PGPPartialKey.swift
 //  SwiftPGP
+//
 
 import Foundation
 
 /// Single Private or Public key.
-/// Note: This is a simplified version. Full implementation would require packet parsing.
 public class PGPPartialKey: NSObject, PGPExportable, NSCopying {
     
     public let type: PGPKeyType
-    public var primaryKeyPacket: Data? // Simplified - should be PGPPacket
+    public var primaryKeyPacket: PGPPublicKeyPacket?
     public var users: [PGPUser]
-    public var subKeys: [Data] // Simplified - should be [PGPPartialSubKey]
-    public var directSignatures: [Data] // Simplified - should be [PGPSignaturePacket]
-    public var revocationSignature: Data? // Simplified - should be PGPSignaturePacket?
+    public var subKeys: [PGPPartialKey] = [] // Simplified - full implementation would use PGPPartialSubKey
+    public var directSignatures: [PGPSignaturePacket] = []
+    public var revocationSignature: PGPSignaturePacket?
     
     public var isEncryptedWithPassword: Bool {
-        // TODO: Implement proper check
+        if let secretPacket = primaryKeyPacket as? PGPSecretKeyPacket {
+            return secretPacket.isEncryptedWithPassphrase
+        }
         return false
     }
     
     public var expirationDate: Date? {
         // TODO: Calculate from signatures
-        return nil
+        return primaryKeyPacket?.createDate
     }
     
     public var keyID: PGPKeyID? {
-        // TODO: Calculate from primary key packet
-        return nil
+        return primaryKeyPacket?.keyID
     }
     
     public var fingerprint: PGPFingerprint? {
-        // TODO: Calculate from primary key packet
-        return nil
+        return primaryKeyPacket?.fingerprint
     }
     
     public var primaryUser: PGPUser? {
         return users.first
     }
     
-    public init(type: PGPKeyType, primaryKeyPacket: Data? = nil, users: [PGPUser] = [], subKeys: [Data] = []) {
+    public init(type: PGPKeyType, primaryKeyPacket: PGPPublicKeyPacket? = nil, users: [PGPUser] = [], subKeys: [PGPPartialKey] = []) {
         self.type = type
         self.primaryKeyPacket = primaryKeyPacket
         self.users = users
@@ -49,15 +50,46 @@ public class PGPPartialKey: NSObject, PGPExportable, NSCopying {
     }
     
     /// Initialize with packets array
-    /// Note: This is a placeholder. Full implementation would parse packets.
-    public init?(packets: [Data]) {
-        // TODO: Parse packets to extract key information
-        guard !packets.isEmpty else {
+    public init?(packets: [PGPPacket]) {
+        guard !packets.isEmpty else { return nil }
+        
+        var primaryPacket: PGPPublicKeyPacket?
+        var keyUsers: [PGPUser] = []
+        
+        // First packet must be Public Key or Secret Key
+        if let secretPacket = packets.first as? PGPSecretKeyPacket {
+            self.type = .secret
+            primaryPacket = secretPacket
+        } else if let publicPacket = packets.first as? PGPPublicKeyPacket {
+            self.type = .public
+            primaryPacket = publicPacket
+        } else {
             return nil
         }
-        self.type = .public // Default, should be determined from packets
-        self.primaryKeyPacket = packets.first
-        self.users = []
+        
+        // Process other packets
+        for i in 1..<packets.count {
+            let packet = packets[i]
+            if let userPacket = packet as? PGPUserIDPacket {
+                let user = PGPUser(userID: userPacket.userID)
+                keyUsers.append(user)
+            } else if let sigPacket = packet as? PGPSignaturePacket {
+                // Check if it's a revocation signature
+                if sigPacket.type == .keyRevocation || sigPacket.type == .subkeyRevocation {
+                    // Store as revocation signature (simplified - should check which key it revokes)
+                    if revocationSignature == nil {
+                        revocationSignature = sigPacket
+                    }
+                } else {
+                    // Regular signature
+                    directSignatures.append(sigPacket)
+                }
+            }
+            // TODO: Handle Subkeys properly
+        }
+        
+        self.primaryKeyPacket = primaryPacket
+        self.users = keyUsers
         self.subKeys = []
         self.directSignatures = []
         self.revocationSignature = nil
@@ -65,15 +97,21 @@ public class PGPPartialKey: NSObject, PGPExportable, NSCopying {
     }
     
     public func decryptedWithPassphrase(_ passphrase: String) throws -> PGPPartialKey {
-        // TODO: Implement decryption
-        guard !isEncryptedWithPassword else {
-            throw PGPError.passphraseInvalid
+        guard let secretPacket = primaryKeyPacket as? PGPSecretKeyPacket else {
+            // Not a secret key, return as-is
+            return self
         }
-        // For now, if not encrypted, return self
-        return self
+        
+        let decryptedPacket = try secretPacket.decryptedWithPassphrase(passphrase)
+        
+        let decryptedKey = PGPPartialKey(type: type, primaryKeyPacket: decryptedPacket, users: users, subKeys: subKeys)
+        decryptedKey.directSignatures = directSignatures
+        decryptedKey.revocationSignature = revocationSignature
+        return decryptedKey
     }
     
     public func copy(with zone: NSZone? = nil) -> Any {
+        // Shallow copy for now, need deep copy for packets
         let copy = PGPPartialKey(type: type, primaryKeyPacket: primaryKeyPacket, users: users, subKeys: subKeys)
         copy.directSignatures = directSignatures
         copy.revocationSignature = revocationSignature
@@ -81,11 +119,26 @@ public class PGPPartialKey: NSObject, PGPExportable, NSCopying {
     }
     
     public func export() throws -> Data {
-        // TODO: Implement export
-        guard let primaryKeyPacket = primaryKeyPacket else {
-            throw PGPError.invalidMessage
+        var data = Data()
+        
+        if let primaryPacket = primaryKeyPacket {
+            data.append(try primaryPacket.export())
         }
-        return primaryKeyPacket
+        
+        for user in users {
+            let userPacket = PGPUserIDPacket(userID: user.userID)
+            data.append(try userPacket.export())
+        }
+        
+        // Export signatures
+        for signature in directSignatures {
+            data.append(try signature.export())
+        }
+        
+        if let revocation = revocationSignature {
+            data.append(try revocation.export())
+        }
+        
+        return data
     }
 }
-
